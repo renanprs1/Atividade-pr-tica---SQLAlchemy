@@ -1,0 +1,142 @@
+import pandas as pd
+from sqlalchemy import (
+    create_engine, text, Table, MetaData, Column, Integer, String, Float,
+    insert, update, select, func, ForeignKey
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
+
+# FASE 1: BÁSICO — CONFIGURAÇÃO E SQL PURO COM SEGURANÇA
+
+# Passo 1
+engine = create_engine('sqlite:///sistema_rh.db', echo=False)
+
+# Passo 2
+with engine.begin() as conn:
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS funcionarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            cargo TEXT NOT NULL,
+            salario REAL NOT NULL
+        )
+    """))
+
+# Passo 3
+novo_funcionario = {
+    'nome': 'Ana Silva',
+    'cargo': 'Desenvolvedor Júnior',
+    'salario': 3500.00
+}
+
+with engine.begin() as conn:
+    conn.execute(
+        text("INSERT INTO funcionarios (nome, cargo, salario) VALUES (:nome, :cargo, :salario)"),
+        novo_funcionario
+    )
+
+# Passo 4
+df_funcionarios = pd.read_sql_query("SELECT * FROM funcionarios", engine)
+print(df_funcionarios)
+
+
+# FASE 2: INTERMEDIÁRIO — SQLALCHEMY CORE (AUTOMATIZAÇÃO PROGRAMÁTICA)
+
+metadata = MetaData()
+
+# Passo 1
+projetos_table = Table(
+    'projetos',
+    metadata,
+    Column('id', Integer, primary_key=True, autoincrement=True),
+    Column('nome_projeto', String, nullable=False),
+    Column('orcamento', Float, nullable=False)
+)
+metadata.create_all(engine)
+
+# Passo 2
+lista_projetos = [
+    {'nome_projeto': 'Migração para Nuvem', 'orcamento': 50000.00},
+    {'nome_projeto': 'Novo App Mobile', 'orcamento': 80000.00},
+    {'nome_projeto': 'Sistema de Estoque', 'orcamento': 30000.00}
+]
+
+with engine.begin() as conn:
+    conn.execute(insert(projetos_table), lista_projetos)
+
+# Passo 3
+with engine.begin() as conn:
+    stmt_update = (
+        update(Table('funcionarios', metadata, autoload_with=engine))
+        .where(text("cargo = 'Desenvolvedor Júnior'"))
+        .values(salario=text("salario * 1.10"))
+    )
+    conn.execute(stmt_update)
+
+# Passo 4
+with engine.connect() as conn:
+    func_tbl = Table('funcionarios', metadata, autoload_with=engine)
+    stmt_relatorio = (
+        select(
+            func_tbl.c.cargo,
+            func.avg(func_tbl.c.salario).label('media_salarial')
+        )
+        .group_by(func_tbl.c.cargo)
+    )
+    resultado_relatorio = conn.execute(stmt_relatorio).fetchall()
+
+
+# FASE 3: AVANÇADO — ORM (ORIENTAÇÃO A OBJETOS E RELACIONAMENTOS)
+
+# Passo 1
+class Base(DeclarativeBase):
+    pass
+
+class Departamento(Base):
+    __tablename__ = 'departamentos'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    nome: Mapped[str] = mapped_column(String, nullable=False)
+
+    funcionarios: Mapped[list["FuncionarioORM"]] = relationship(
+        "FuncionarioORM", back_populates="departamento", cascade="all, delete-orphan"
+    )
+
+class FuncionarioORM(Base):
+    __tablename__ = 'funcionarios_orm'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    nome: Mapped[str] = mapped_column(String, nullable=False)
+    cargo: Mapped[str] = mapped_column(String, nullable=False)
+    salario: Mapped[float] = mapped_column(Float, nullable=False)
+    
+    # Passo 2
+    departamento_id: Mapped[int] = mapped_column(ForeignKey('departamentos.id'))
+    departamento: Mapped[Departamento] = relationship("Departamento", back_populates="funcionarios")
+
+Base.metadata.create_all(engine)
+
+# Passo 3
+Session = sessionmaker(bind=engine)
+sessao = Session()
+
+try:
+    dept_ti = Departamento(nome="TI")
+    func1 = FuncionarioORM(nome="Carlos Eduardo", cargo="Desenvolvedor Pleno", salario=6500.00)
+    func2 = FuncionarioORM(nome="Mariana Costa", cargo="Arquiteta de Software", salario=11000.00)
+    
+    dept_ti.funcionarios.append(func1)
+    dept_ti.funcionarios.append(func2)
+    
+    sessao.add(dept_ti)
+    sessao.commit()
+
+    # Passo 4
+    stmt_consulta = (
+        select(FuncionarioORM)
+        .join(FuncionarioORM.departamento)
+        .where(Departamento.nome == "TI")
+    )
+    funcionarios_ti = sessao.execute(stmt_consulta).scalars().all()
+
+finally:
+    sessao.close()
